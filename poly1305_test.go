@@ -64,7 +64,7 @@ func TestPoly1305(t *testing.T) {
 	}
 }
 
-func ExamplePoly1305() {
+func ExampleNew() {
 	// A message for which we'd like to ensure authenticity.
 	message := []byte("A message which must be authentic.")
 

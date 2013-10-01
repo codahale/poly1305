@@ -32,8 +32,7 @@ const (
 	Size = 16
 )
 
-// A Poly1305 is an instance of Poly1305 using a particular key.
-type Poly1305 struct {
+type poly1305 struct {
 	key   []byte
 	state C.poly1305_state
 }
@@ -45,7 +44,7 @@ func New(key []byte) (hash.Hash, error) {
 		return nil, ErrInvalidKey
 	}
 
-	h := new(Poly1305)
+	h := new(poly1305)
 	h.key = make([]byte, KeySize)
 	copy(h.key, key)
 	h.Reset()
@@ -53,27 +52,19 @@ func New(key []byte) (hash.Hash, error) {
 	return h, nil
 }
 
-// BlockSize returns the hash's underlying block size.
-// The Write method must be able to accept any amount
-// of data, but it may operate more efficiently if all writes
-// are a multiple of the block size.
-func (*Poly1305) BlockSize() int {
+func (*poly1305) BlockSize() int {
 	return BlockSize
 }
 
-// Size returns the number of bytes Sum will return.
-func (*Poly1305) Size() int {
+func (*poly1305) Size() int {
 	return Size
 }
 
-// Reset resets the Hash to its initial state.
-func (s *Poly1305) Reset() {
+func (s *poly1305) Reset() {
 	C.poly1305_init(&s.state, (*C.uchar)(&s.key[0]))
 }
 
-// Write (via the embedded io.Writer interface) adds more data to the running
-// hash. It never returns an error.
-func (s *Poly1305) Write(buf []byte) (int, error) {
+func (s *poly1305) Write(buf []byte) (int, error) {
 	var p *C.uchar
 	if len(buf) > 0 {
 		p = (*C.uchar)(&buf[0])
@@ -84,9 +75,7 @@ func (s *Poly1305) Write(buf []byte) (int, error) {
 	return len(buf), nil
 }
 
-// Sum appends the current hash to b and returns the resulting slice.
-// It does not change the underlying hash state.
-func (s *Poly1305) Sum(buf []byte) []byte {
+func (s *poly1305) Sum(buf []byte) []byte {
 	var mac [Size]byte
 	C.poly1305_finish(&s.state, (*C.uchar)(&mac[0]))
 	return append(buf, mac[0:]...)
