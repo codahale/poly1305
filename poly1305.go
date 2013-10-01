@@ -91,13 +91,7 @@ func (s *Poly1305) Write(buf []byte) (int, error) {
 // Sum appends the current hash to b and returns the resulting slice.
 // It does not change the underlying hash state.
 func (s *Poly1305) Sum(buf []byte) []byte {
-	if len(buf) < s.Size() {
-		buf = make([]byte, s.Size())
-	} else {
-		buf = buf[0:s.Size()]
-	}
-
-	C.poly1305_finish(&s.state, (*C.uchar)(&buf[0]))
-
-	return buf
+	var mac [Size]byte
+	C.poly1305_finish(&s.state, (*C.uchar)(&mac[0]))
+	return append(buf, mac[0:]...)
 }
