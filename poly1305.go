@@ -38,7 +38,7 @@ const (
 
 // A Poly1305 is an instance of Poly1305 using a particular key.
 type Poly1305 struct {
-	key   [KeySize]C.uchar
+	key   []byte
 	state C.poly1305_state
 }
 
@@ -50,9 +50,8 @@ func New(key []byte) (hash.Hash, error) {
 	}
 
 	h := new(Poly1305)
-	for i, v := range key {
-		h.key[i] = (C.uchar)(v)
-	}
+	h.key = make([]byte, KeySize)
+	copy(h.key, key)
 	h.Reset()
 
 	return h, nil
@@ -73,7 +72,7 @@ func (*Poly1305) Size() int {
 
 // Reset resets the Hash to its initial state.
 func (s *Poly1305) Reset() {
-	C.poly1305_init(&s.state, &s.key[0])
+	C.poly1305_init(&s.state, (*C.uchar)(&s.key[0]))
 }
 
 // Write (via the embedded io.Writer interface) adds more data to the running
