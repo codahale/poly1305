@@ -10,10 +10,6 @@
 // on other messages.
 package poly1305
 
-// BUG(codahale): Only supports AMD64.
-
-// +build: amd64
-
 import (
 	// #cgo CFLAGS: -O3
 	// #include "poly1305-donna.h"

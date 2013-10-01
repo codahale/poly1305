@@ -31,6 +31,7 @@ Andrew Moon:
 
  * poly1305-donna.h
  * poly1305-donna-x64-sse2-incremental-source.c
+ * poly1305-donna-x86-sse2-incremental-source.c
  * portable-jane.h
 
 These files remain in the public domain and have not been meaningfully modified.

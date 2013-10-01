@@ -6,9 +6,9 @@
 	Unrolled to 2 powers, i.e. 64 byte block size
 */
 
+#if defined(CPU_X86)
 #include "portable-jane.h"
 #include "poly1305-donna.h"
-#if defined(CPU_X86_64)
 #include <emmintrin.h>
 typedef __m128i xmmi;
 
@@ -27,38 +27,39 @@ typedef struct poly1305_power_t {
 typedef struct poly1305_state_internal_t {
 	poly1305_power P[2];     /* 288 bytes, top 32 bit halves unused = 144 bytes of free storage */
 	union {
-		xmmi H[5];           /*  80 bytes  */
-		uint64_t HH[10];
+		xmmi H[5];           /*       80 bytes  */
+		uint32_t HH[20];
 	};
-	/* uint64_t r0,r1,r2;       [24 bytes] */
-	/* uint64_t pad0,pad1;      [16 bytes] */
-	uint64_t started;        /*   8 bytes  */
-	uint64_t leftover;       /*   8 bytes  */
-	uint8_t buffer[64];      /*  64 bytes  */
-} poly1305_state_internal;   /* 448 bytes total + 63 bytes for alignment = 511 bytes raw */
+	/* uint32_t r0,r1,r2,r3,r4;      [20 bytes] */
+	/* uint32_t pad0,pad1,pad2,pad3; [16 bytes] */
+	uint32_t started;        /*        4 bytes  */
+	uint32_t leftover;       /*        4 bytes  */
+	uint8_t buffer[64];      /*       64 bytes  */
+} poly1305_state_internal;   /* 448 bytes total + 63 bytes for alignment = 503 bytes raw */
 
-static poly1305_state_internal INLINE
+static poly1305_state_internal
 *poly1305_aligned_state(poly1305_state *state) {
-	return (poly1305_state_internal *)(((uint64_t)state + 63) & ~63);
+	return (poly1305_state_internal *)(((size_t)state + 63) & ~63);
 }
+
 /* copy 0-63 bytes */
-static void INLINE
+static void
 poly1305_block_copy(uint8_t *dst, const uint8_t *src, size_t bytes) {
-	size_t offset = src - dst;
+	size_t offset = 0;
 	if (bytes & 32) {
-		_mm_storeu_si128((xmmi *)(dst + 0), _mm_loadu_si128((xmmi *)(dst + offset + 0)));
-		_mm_storeu_si128((xmmi *)(dst + 16), _mm_loadu_si128((xmmi *)(dst + offset + 16)));
-		dst += 32;
+		_mm_storeu_si128((xmmi *)(dst + offset + 0), _mm_loadu_si128((xmmi *)(src + offset + 0)));
+		_mm_storeu_si128((xmmi *)(dst + offset + 16), _mm_loadu_si128((xmmi *)(src + offset + 16)));
+		offset += 32;
 	}
-	if (bytes & 16) { _mm_storeu_si128((xmmi *)dst, _mm_loadu_si128((xmmi *)(dst + offset))); dst += 16; }
-	if (bytes &  8) { *(uint64_t *)dst = *(uint64_t *)(dst + offset); dst += 8; }
-	if (bytes &  4) { *(uint32_t *)dst = *(uint32_t *)(dst + offset); dst += 4; }
-	if (bytes &  2) { *(uint16_t *)dst = *(uint16_t *)(dst + offset); dst += 2; }
-	if (bytes &  1) { *( uint8_t *)dst = *( uint8_t *)(dst + offset);           }
+	if (bytes & 16) { _mm_storeu_si128((xmmi *)(dst + offset + 0), _mm_loadu_si128((xmmi *)(src + offset + 0))); offset += 16; }
+	if (bytes &  8) { *(uint64_t *)(dst + offset) = *(uint64_t *)(src + offset); offset += 8; }
+	if (bytes &  4) { *(uint32_t *)(dst + offset) = *(uint32_t *)(src + offset); offset += 4; }
+	if (bytes &  2) { *(uint16_t *)(dst + offset) = *(uint16_t *)(src + offset); offset += 2; }
+	if (bytes &  1) { *( uint8_t *)(dst + offset) = *( uint8_t *)(src + offset);              }
 }
 
 /* zero 0-15 bytes */
-static void INLINE
+static void
 poly1305_block_zero(uint8_t *dst, size_t bytes) {
 	if (bytes &  8) { *(uint64_t *)dst = 0; dst += 8; }
 	if (bytes &  4) { *(uint32_t *)dst = 0; dst += 4; }
@@ -66,34 +67,32 @@ poly1305_block_zero(uint8_t *dst, size_t bytes) {
 	if (bytes &  1) { *( uint8_t *)dst = 0; }
 }
 
-static size_t INLINE
-poly1305_min(size_t a, size_t b) {
-	return (a < b) ? a : b;
-}
-
 void
 poly1305_init(poly1305_state *state, const unsigned char key[32]) {
 	poly1305_state_internal *st = poly1305_aligned_state(state);
 	poly1305_power *p;
-	uint64_t r0,r1,r2;
-	uint64_t t0,t1;
+	uint32_t t0,t1,t2,t3;
+	uint32_t r0,r1,r2,r3,r4;
 
 	/* clamp key */
-	t0 = U8TO64_LE(key + 0);
-	t1 = U8TO64_LE(key + 8);
-	r0 = t0 & 0xffc0fffffff; t0 >>= 44; t0 |= t1 << 20;
-	r1 = t0 & 0xfffffc0ffff; t1 >>= 24;
-	r2 = t1 & 0x00ffffffc0f;
+	t0 = U8TO32_LE(key+0);
+	t1 = U8TO32_LE(key+4);
+	t2 = U8TO32_LE(key+8);
+	t3 = U8TO32_LE(key+12);
+	r0 = t0 & 0x3ffffff; t0 >>= 26; t0 |= t1 << 6;
+	r1 = t0 & 0x3ffff03; t1 >>= 20; t1 |= t2 << 12;
+	r2 = t1 & 0x3ffc0ff; t2 >>= 14; t2 |= t3 << 18;
+	r3 = t2 & 0x3f03fff; t3 >>= 8;
+	r4 = t3 & 0x00fffff;
 
 	/* store r in un-used space of st->P[1] */
 	p = &st->P[1];
-	p->R20.d[1] = (uint32_t)(r0      );
-	p->R20.d[3] = (uint32_t)(r0 >> 32);
-	p->R21.d[1] = (uint32_t)(r1      );
-	p->R21.d[3] = (uint32_t)(r1 >> 32);
-	p->R22.d[1] = (uint32_t)(r2      );
-	p->R22.d[3] = (uint32_t)(r2 >> 32);
-	
+	p->R20.d[1] = r0;
+	p->R20.d[3] = r1;
+	p->R21.d[1] = r2;
+	p->R21.d[3] = r3;
+	p->R22.d[1] = r4;
+
 	/* store pad */
 	p->R23.d[1] = U8TO32_LE(key + 16);
 	p->R23.d[3] = U8TO32_LE(key + 20);
@@ -118,43 +117,59 @@ poly1305_first_block(poly1305_state_internal *st, const uint8_t *m) {
 	const xmmi HIBIT = _mm_load_si128((xmmi*)poly1305_x64_sse2_1shl128);
 	xmmi T5,T6;
 	poly1305_power *p;
-	uint128_t d[3],m0,m1;
-	uint64_t r0,r1,r2;
-	uint64_t r20,r21,r22,s22;
-	uint64_t pad0,pad1;
-	uint64_t c;
-	uint64_t i;
+	uint64_t t[5];
+	uint32_t r0,r1,r2,r3,r4;
+	uint32_t r20,r21,r22,r23,r24;
+	uint32_t s21,s22,s23,s24;
+	uint32_t pad0,pad1,pad2,pad3;
+	uint32_t b;
+	uint32_t i;
 
 	/* pull out stored info */
 	p = &st->P[1];
 
-	r0   = ((uint64_t)p->R20.d[3] << 32) | (uint64_t)p->R20.d[1];
-	r1   = ((uint64_t)p->R21.d[3] << 32) | (uint64_t)p->R21.d[1];
-	r2   = ((uint64_t)p->R22.d[3] << 32) | (uint64_t)p->R22.d[1];
-	pad0 = ((uint64_t)p->R23.d[3] << 32) | (uint64_t)p->R23.d[1];
-	pad1 = ((uint64_t)p->R24.d[3] << 32) | (uint64_t)p->R24.d[1];
+	r0 = p->R20.d[1];
+	r1 = p->R20.d[3];
+	r2 = p->R21.d[1];
+	r3 = p->R21.d[3];
+	r4 = p->R22.d[1];
+
+	pad0 = p->R23.d[1];
+	pad1 = p->R23.d[3];
+	pad2 = p->R24.d[1];
+	pad3 = p->R24.d[3];
 
 	/* compute powers r^2,r^4 */
 	r20 = r0;
 	r21 = r1;
 	r22 = r2;
+	r23 = r3;
+	r24 = r4;
 	for (i = 0; i < 2; i++) {
-		s22 = r22 * (5 << 2);
+		s21 = r21 * 5;
+		s22 = r22 * 5;
+		s23 = r23 * 5;
+		s24 = r24 * 5;
 
-		mul64x64_128(d[0], r20, r20); mul64x64_128(m0, r21 * 2, s22);  add128(d[0], m0);
-		mul64x64_128(d[1], r22, s22); mul64x64_128(m0, r20 * 2, r21);  add128(d[1], m0);
-		mul64x64_128(d[2], r21, r21); mul64x64_128(m0, r22 * 2, r20);  add128(d[2], m0);
-		                    r20 = lo128(d[0]) & 0xfffffffffff; c = shr128(d[0], 44);
-		add128_64(d[1], c); r21 = lo128(d[1]) & 0xfffffffffff; c = shr128(d[1], 44);
-		add128_64(d[2], c); r22 = lo128(d[2]) & 0x3ffffffffff; c = shr128(d[2], 42);
-		r20   += c * 5; c = (r20 >> 44); r20 = r20 & 0xfffffffffff;
-		r21 += c;
+		t[0]  = mul32x32_64(r20,r20  ) + mul32x32_64(r22*2,s23) + mul32x32_64(r24*2,s21);
+		t[1]  = mul32x32_64(r20,r21*2) + mul32x32_64(r24*2,s22) + mul32x32_64(r23  ,s23);
+		t[2]  = mul32x32_64(r21,r21  ) + mul32x32_64(r20*2,r22) + mul32x32_64(r24*2,s23);
+		t[3]  = mul32x32_64(r20,r23*2) + mul32x32_64(r21*2,r22) + mul32x32_64(r24  ,s24);
+		t[4]  = mul32x32_64(r22,r22  ) + mul32x32_64(r20*2,r24) + mul32x32_64(r23*2,r21);
 
-		p->R20.v = _mm_shuffle_epi32(_mm_cvtsi32_si128((uint32_t)( r20                     ) & 0x3ffffff), _MM_SHUFFLE(1,0,1,0));
-		p->R21.v = _mm_shuffle_epi32(_mm_cvtsi32_si128((uint32_t)((r20 >> 26) | (r21 << 18)) & 0x3ffffff), _MM_SHUFFLE(1,0,1,0));
-		p->R22.v = _mm_shuffle_epi32(_mm_cvtsi32_si128((uint32_t)((r21 >> 8)               ) & 0x3ffffff), _MM_SHUFFLE(1,0,1,0));
-		p->R23.v = _mm_shuffle_epi32(_mm_cvtsi32_si128((uint32_t)((r21 >> 34) | (r22 << 10)) & 0x3ffffff), _MM_SHUFFLE(1,0,1,0));
-		p->R24.v = _mm_shuffle_epi32(_mm_cvtsi32_si128((uint32_t)((r22 >> 16)              )            ), _MM_SHUFFLE(1,0,1,0));
+						r20 = (uint32_t)t[0] & 0x3ffffff; b = (uint32_t)(t[0] >> 26);
+		t[1] += b;      r21 = (uint32_t)t[1] & 0x3ffffff; b = (uint32_t)(t[1] >> 26);
+		t[2] += b;      r22 = (uint32_t)t[2] & 0x3ffffff; b = (uint32_t)(t[2] >> 26);
+		t[3] += b;      r23 = (uint32_t)t[3] & 0x3ffffff; b = (uint32_t)(t[3] >> 26);
+		t[4] += b;      r24 = (uint32_t)t[4] & 0x3ffffff; b = (uint32_t)(t[4] >> 26);
+		r20 += b * 5;   b = (r20 >> 26); r20 &= 0x3ffffff;
+		r21 += b;
+
+		p->R20.v = _mm_shuffle_epi32(_mm_cvtsi32_si128(r20), _MM_SHUFFLE(1,0,1,0));
+		p->R21.v = _mm_shuffle_epi32(_mm_cvtsi32_si128(r21), _MM_SHUFFLE(1,0,1,0));
+		p->R22.v = _mm_shuffle_epi32(_mm_cvtsi32_si128(r22), _MM_SHUFFLE(1,0,1,0));
+		p->R23.v = _mm_shuffle_epi32(_mm_cvtsi32_si128(r23), _MM_SHUFFLE(1,0,1,0));
+		p->R24.v = _mm_shuffle_epi32(_mm_cvtsi32_si128(r24), _MM_SHUFFLE(1,0,1,0));
 		p->S21.v = _mm_mul_epu32(p->R21.v, FIVE);
 		p->S22.v = _mm_mul_epu32(p->R22.v, FIVE);
 		p->S23.v = _mm_mul_epu32(p->R23.v, FIVE);
@@ -164,16 +179,15 @@ poly1305_first_block(poly1305_state_internal *st, const uint8_t *m) {
 
 	/* put saved info back */
 	p = &st->P[1];
-	p->R20.d[1] = (uint32_t)(r0        );
-	p->R20.d[3] = (uint32_t)(r0   >> 32);
-	p->R21.d[1] = (uint32_t)(r1        );
-	p->R21.d[3] = (uint32_t)(r1   >> 32);
-	p->R22.d[1] = (uint32_t)(r2        );
-	p->R22.d[3] = (uint32_t)(r2   >> 32);
-	p->R23.d[1] = (uint32_t)(pad0      );
-	p->R23.d[3] = (uint32_t)(pad0 >> 32);
-	p->R24.d[1] = (uint32_t)(pad1      );
-	p->R24.d[3] = (uint32_t)(pad1 >> 32);
+	p->R20.d[1] = r0;
+	p->R20.d[3] = r1;
+	p->R21.d[1] = r2;
+	p->R21.d[3] = r3;
+	p->R22.d[1] = r4;
+	p->R23.d[1] = pad0;
+	p->R23.d[3] = pad1;
+	p->R24.d[1] = pad2;
+	p->R24.d[3] = pad3;
 
 	/* H = [Mx,My] */
 	T5 = _mm_unpacklo_epi64(_mm_loadl_epi64((xmmi *)(m + 0)), _mm_loadl_epi64((xmmi *)(m + 16)));
@@ -304,10 +318,10 @@ poly1305_combine(poly1305_state_internal *st, const uint8_t *m, size_t bytes) {
 	xmmi T0,T1,T2,T3,T4,T5,T6;
 	xmmi C1,C2;
 
-	uint64_t r0,r1,r2;
-	uint64_t t0,t1,t2,t3,t4;
-	uint64_t c;
-	size_t consumed = 0;
+	uint32_t r0,r1,r2,r3,r4;
+	uint32_t h0,h1,h2,h3,h4;
+	uint32_t b;
+	uint32_t consumed = 0;
 
 	H0 = st->H[0];
 	H1 = st->H[1];
@@ -371,19 +385,21 @@ poly1305_combine(poly1305_state_internal *st, const uint8_t *m, size_t bytes) {
 	}
 
 	/* finalize, H *= [r^2,r] */
-	r0 = ((uint64_t)p->R20.d[3] << 32) | (uint64_t)p->R20.d[1];
-	r1 = ((uint64_t)p->R21.d[3] << 32) | (uint64_t)p->R21.d[1];
-	r2 = ((uint64_t)p->R22.d[3] << 32) | (uint64_t)p->R22.d[1];
+	r0 = p->R20.d[1];
+	r1 = p->R20.d[3];
+	r2 = p->R21.d[1];
+	r3 = p->R21.d[3];
+	r4 = p->R22.d[1];
 
-	p->R20.d[2] = (uint32_t)( r0                    ) & 0x3ffffff;
-	p->R21.d[2] = (uint32_t)((r0 >> 26) | (r1 << 18)) & 0x3ffffff;
-	p->R22.d[2] = (uint32_t)((r1 >> 8)              ) & 0x3ffffff;
-	p->R23.d[2] = (uint32_t)((r1 >> 34) | (r2 << 10)) & 0x3ffffff;
-	p->R24.d[2] = (uint32_t)((r2 >> 16)             )            ;
-	p->S21.d[2] = p->R21.d[2] * 5;
-	p->S22.d[2] = p->R22.d[2] * 5;
-	p->S23.d[2] = p->R23.d[2] * 5;
-	p->S24.d[2] = p->R24.d[2] * 5;
+	p->R20.d[2] = r0;
+	p->R21.d[2] = r1;
+	p->R22.d[2] = r2;
+	p->R23.d[2] = r3;
+	p->R24.d[2] = r4;
+	p->S21.d[2] = r1 * 5;
+	p->S22.d[2] = r2 * 5;
+	p->S23.d[2] = r3 * 5;
+	p->S24.d[2] = r4 * 5;
 
 	/* H *= [r^2,r] */
 	T0 = _mm_mul_epu32(H0, p->R20.v);
@@ -416,18 +432,19 @@ poly1305_combine(poly1305_state_internal *st, const uint8_t *m, size_t bytes) {
 	H3 = _mm_add_epi64(T3, _mm_srli_si128(T3, 8));
 	H4 = _mm_add_epi64(T4, _mm_srli_si128(T4, 8));
 
-	t0 = _mm_cvtsi128_si32(H0)    ; c = (t0 >> 26); t0 &= 0x3ffffff;
-	t1 = _mm_cvtsi128_si32(H1) + c; c = (t1 >> 26); t1 &= 0x3ffffff;
-	t2 = _mm_cvtsi128_si32(H2) + c; c = (t2 >> 26); t2 &= 0x3ffffff;
-	t3 = _mm_cvtsi128_si32(H3) + c; c = (t3 >> 26); t3 &= 0x3ffffff;
-	t4 = _mm_cvtsi128_si32(H4) + c; c = (t4 >> 26); t4 &= 0x3ffffff;
-	t0 =              t0 + (c * 5); c = (t0 >> 26); t0 &= 0x3ffffff;
-	t1 =              t1 + c;
+	h0 = _mm_cvtsi128_si32(H0)    ; b = (h0 >> 26); h0 &= 0x3ffffff;
+	h1 = _mm_cvtsi128_si32(H1) + b; b = (h1 >> 26); h1 &= 0x3ffffff;
+	h2 = _mm_cvtsi128_si32(H2) + b; b = (h2 >> 26); h2 &= 0x3ffffff;
+	h3 = _mm_cvtsi128_si32(H3) + b; b = (h3 >> 26); h3 &= 0x3ffffff;
+	h4 = _mm_cvtsi128_si32(H4) + b; b = (h4 >> 26); h4 &= 0x3ffffff;
+	h0 =              h0 + (b * 5);
 
-	st->HH[0] =  ((t0      ) | (t1 << 26)             ) & 0xfffffffffffull;
-	st->HH[1] =  ((t1 >> 18) | (t2 <<  8) | (t3 << 34)) & 0xfffffffffffull;
-	st->HH[2] =  ((t3 >> 10) | (t4 << 16)             ) & 0x3ffffffffffull;
-	
+	st->HH[0] = h0;
+	st->HH[1] = h1;
+	st->HH[2] = h2;
+	st->HH[3] = h3;
+	st->HH[4] = h4;
+
 	return consumed;
 }
 
@@ -443,7 +460,9 @@ poly1305_update(poly1305_state *state, const unsigned char *m, size_t bytes) {
 			m += 32;
 			bytes -= 32;
 		} else {
-			want = poly1305_min(32 - st->leftover, bytes);
+			want = (32 - st->leftover);
+			if (want > bytes)
+					want = bytes;
 			poly1305_block_copy(st->buffer + st->leftover, m, want);
 			bytes -= want;
 			m += want;
@@ -458,7 +477,9 @@ poly1305_update(poly1305_state *state, const unsigned char *m, size_t bytes) {
 
 	/* handle leftover */
 	if (st->leftover) {
-		want = poly1305_min(64 - st->leftover, bytes);
+		want = (64 - st->leftover);
+		if (want > bytes)
+				want = bytes;
 		poly1305_block_copy(st->buffer + st->leftover, m, want);
 		bytes -= want;
 		m += want;
@@ -486,13 +507,17 @@ poly1305_update(poly1305_state *state, const unsigned char *m, size_t bytes) {
 void
 poly1305_finish(poly1305_state *state, unsigned char mac[16]) {
 	poly1305_state_internal *st = poly1305_aligned_state(state);
-	size_t leftover = st->leftover;
+	uint32_t leftover = st->leftover;
 	uint8_t *m = st->buffer;
-	uint128_t d[3],m0,m1;
-	uint64_t h0,h1,h2;
-	uint64_t t0,t1;
-	uint64_t g0,g1,g2,c,nc;
-	uint64_t r0,r1,r2,s1,s2;
+	uint64_t t[5];
+	uint32_t h0,h1,h2,h3,h4;
+	uint32_t r0,r1,r2,r3,r4;
+	uint32_t s1,s2,s3,s4;
+	uint32_t t0,t1,t2,t3;
+	uint32_t g0,g1,g2,g3,g4;
+	uint32_t b, nb;
+	uint64_t f0,f1,f2,f3;
+	uint64_t c;
 	poly1305_power *p;
 
 	if (st->started) {
@@ -505,32 +530,47 @@ poly1305_finish(poly1305_state *state, unsigned char mac[16]) {
 	h0 = st->HH[0];
 	h1 = st->HH[1];
 	h2 = st->HH[2];
+	h3 = st->HH[3];
+	h4 = st->HH[4];
 
 	p = &st->P[1];
-	r0 = ((uint64_t)p->R20.d[3] << 32) | (uint64_t)p->R20.d[1];
-	r1 = ((uint64_t)p->R21.d[3] << 32) | (uint64_t)p->R21.d[1];
-	r2 = ((uint64_t)p->R22.d[3] << 32) | (uint64_t)p->R22.d[1];
-	s1 = r1 * (5 << 2);
-	s2 = r2 * (5 << 2);
+	r0 = p->R20.d[1];
+	r1 = p->R20.d[3];
+	r2 = p->R21.d[1];
+	r3 = p->R21.d[3];
+	r4 = p->R22.d[1];
+	s1 = r1 * 5;
+	s2 = r2 * 5;
+	s3 = r3 * 5;
+	s4 = r4 * 5;
 
 	if (leftover < 16) goto poly1305_donna_atmost15bytes;
 
 poly1305_donna_atleast16bytes:
-	t0 = U8TO64_LE(m + 0);
-	t1 = U8TO64_LE(m + 8);
-	h0 += t0 & 0xfffffffffff;
-	t0 = shr128_pair(t1, t0, 44);
-	h1 += t0 & 0xfffffffffff;
-	h2 += (t1 >> 24) | ((uint64_t)1 << 40);
+	t0 = U8TO32_LE(m);
+	t1 = U8TO32_LE(m+4);
+	t2 = U8TO32_LE(m+8);
+	t3 = U8TO32_LE(m+12);
+
+	h0 += t0 & 0x3ffffff;
+	h1 += ((((uint64_t)t1 << 32) | t0) >> 26) & 0x3ffffff;
+	h2 += ((((uint64_t)t2 << 32) | t1) >> 20) & 0x3ffffff;
+	h3 += ((((uint64_t)t3 << 32) | t2) >> 14) & 0x3ffffff;
+	h4 += (t3 >> 8) | (1 << 24);
 
 poly1305_donna_mul:
-	mul64x64_128(d[0], h0, r0); mul64x64_128(m0, h1, s2);  mul64x64_128(m1, h2, s1); add128(d[0], m0); add128(d[0], m1);
-	mul64x64_128(d[1], h0, r1); mul64x64_128(m0, h1, r0);  mul64x64_128(m1, h2, s2); add128(d[1], m0); add128(d[1], m1);
-	mul64x64_128(d[2], h0, r2); mul64x64_128(m0, h1, r1);  mul64x64_128(m1, h2, r0); add128(d[2], m0); add128(d[2], m1);
-	                    h0 = lo128(d[0]) & 0xfffffffffff; c = shr128(d[0], 44);
-	add128_64(d[1], c); h1 = lo128(d[1]) & 0xfffffffffff; c = shr128(d[1], 44);
-	add128_64(d[2], c); h2 = lo128(d[2]) & 0x3ffffffffff; c = shr128(d[2], 42);
-	h0   += c * 5;
+	t[0]  = mul32x32_64(h0,r0) + mul32x32_64(h1,s4) + mul32x32_64(h2,s3) + mul32x32_64(h3,s2) + mul32x32_64(h4,s1);
+	t[1]  = mul32x32_64(h0,r1) + mul32x32_64(h1,r0) + mul32x32_64(h2,s4) + mul32x32_64(h3,s3) + mul32x32_64(h4,s2);
+	t[2]  = mul32x32_64(h0,r2) + mul32x32_64(h1,r1) + mul32x32_64(h2,r0) + mul32x32_64(h3,s4) + mul32x32_64(h4,s3);
+	t[3]  = mul32x32_64(h0,r3) + mul32x32_64(h1,r2) + mul32x32_64(h2,r1) + mul32x32_64(h3,r0) + mul32x32_64(h4,s4);
+	t[4]  = mul32x32_64(h0,r4) + mul32x32_64(h1,r3) + mul32x32_64(h2,r2) + mul32x32_64(h3,r1) + mul32x32_64(h4,r0);
+
+	                h0 = (uint32_t)t[0] & 0x3ffffff; c =           (t[0] >> 26);
+	t[1] += c;      h1 = (uint32_t)t[1] & 0x3ffffff; b = (uint32_t)(t[1] >> 26);
+	t[2] += b;      h2 = (uint32_t)t[2] & 0x3ffffff; b = (uint32_t)(t[2] >> 26);
+	t[3] += b;      h3 = (uint32_t)t[3] & 0x3ffffff; b = (uint32_t)(t[3] >> 26);
+	t[4] += b;      h4 = (uint32_t)t[4] & 0x3ffffff; b = (uint32_t)(t[4] >> 26);
+	h0 += b * 5;
 
 	m += 16;
 	leftover -= 16;
@@ -544,47 +584,59 @@ poly1305_donna_atmost15bytes:
 	poly1305_block_zero(m + leftover, 16 - leftover);
 	leftover = 16;
 
-	t0 = U8TO64_LE(m+0);
-	t1 = U8TO64_LE(m+8);
-	h0 += t0 & 0xfffffffffff; t0 = shr128_pair(t1, t0, 44);
-	h1 += t0 & 0xfffffffffff;
-	h2 += (t1 >> 24);
+	t0 = U8TO32_LE(m+0);
+	t1 = U8TO32_LE(m+4);
+	t2 = U8TO32_LE(m+8);
+	t3 = U8TO32_LE(m+12);
+
+	h0 += t0 & 0x3ffffff;
+	h1 += ((((uint64_t)t1 << 32) | t0) >> 26) & 0x3ffffff;
+	h2 += ((((uint64_t)t2 << 32) | t1) >> 20) & 0x3ffffff;
+	h3 += ((((uint64_t)t3 << 32) | t2) >> 14) & 0x3ffffff;
+	h4 += (t3 >> 8);
 
 	goto poly1305_donna_mul;
 
 poly1305_donna_finish:
-	             c = (h0 >> 44); h0 &= 0xfffffffffff;
-	h1 += c;     c = (h1 >> 44); h1 &= 0xfffffffffff;
-	h2 += c;     c = (h2 >> 42); h2 &= 0x3ffffffffff;
-	h0 += c * 5;
+	             b = h0 >> 26; h0 = h0 & 0x3ffffff;
+	h1 +=     b; b = h1 >> 26; h1 = h1 & 0x3ffffff;
+	h2 +=     b; b = h2 >> 26; h2 = h2 & 0x3ffffff;
+	h3 +=     b; b = h3 >> 26; h3 = h3 & 0x3ffffff;
+	h4 +=     b; b = h4 >> 26; h4 = h4 & 0x3ffffff;
+	h0 += b * 5;
 
-	g0 = h0 + 5; c = (g0 >> 44); g0 &= 0xfffffffffff;
-	g1 = h1 + c; c = (g1 >> 44); g1 &= 0xfffffffffff;
-	g2 = h2 + c - ((uint64_t)1 << 42);
+	g0 = h0 + 5; b = g0 >> 26; g0 &= 0x3ffffff;
+	g1 = h1 + b; b = g1 >> 26; g1 &= 0x3ffffff;
+	g2 = h2 + b; b = g2 >> 26; g2 &= 0x3ffffff;
+	g3 = h3 + b; b = g3 >> 26; g3 &= 0x3ffffff;
+	g4 = h4 + b - (1 << 26);
 
-	c = (g2 >> 63) - 1;
-	nc = ~c;
-	h0 = (h0 & nc) | (g0 & c);
-	h1 = (h1 & nc) | (g1 & c);
-	h2 = (h2 & nc) | (g2 & c);
+	b = (g4 >> 31) - 1;
+	nb = ~b;
+	h0 = (h0 & nb) | (g0 & b);
+	h1 = (h1 & nb) | (g1 & b);
+	h2 = (h2 & nb) | (g2 & b);
+	h3 = (h3 & nb) | (g3 & b);
+	h4 = (h4 & nb) | (g4 & b);
 
 	/* pad */
-	t0 = ((uint64_t)p->R23.d[3] << 32) | (uint64_t)p->R23.d[1];
-	t1 = ((uint64_t)p->R24.d[3] << 32) | (uint64_t)p->R24.d[1];
-	h0 += (t0 & 0xfffffffffff)    ; c = (h0 >> 44); h0 &= 0xfffffffffff; t0 = shr128_pair(t1, t0, 44);
-	h1 += (t0 & 0xfffffffffff) + c; c = (h1 >> 44); h1 &= 0xfffffffffff; t1 = (t1 >> 24);
-	h2 += (t1                ) + c;
+	f0 = ((h0      ) | (h1 << 26)) + (uint64_t)p->R23.d[1];
+	f1 = ((h1 >>  6) | (h2 << 20)) + (uint64_t)p->R23.d[3];
+	f2 = ((h2 >> 12) | (h3 << 14)) + (uint64_t)p->R24.d[1];
+	f3 = ((h3 >> 18) | (h4 <<  8)) + (uint64_t)p->R24.d[3];
 
-	U64TO8_LE(mac + 0, ((h0      ) | (h1 << 44)));
-	U64TO8_LE(mac + 8, ((h1 >> 20) | (h2 << 24)));
+	U32TO8_LE(mac +  0, (uint32_t)f0); f1 += (f0 >> 32);
+	U32TO8_LE(mac +  4, (uint32_t)f1); f2 += (f1 >> 32);
+	U32TO8_LE(mac +  8, (uint32_t)f2); f3 += (f2 >> 32);
+	U32TO8_LE(mac + 12, (uint32_t)f3);
 }
 
 void
-poly1305_auth(unsigned char out[16], const unsigned char *m, size_t inlen, const unsigned char key[32]) {
+poly1305_auth(unsigned char mac[16], const unsigned char *m, size_t inlen, const unsigned char key[32]) {
 	poly1305_state state;
 	poly1305_init(&state, key);
 	poly1305_update(&state, m, inlen);
-	poly1305_finish(&state, out);
+	poly1305_finish(&state, mac);
 }
 
 #endif
